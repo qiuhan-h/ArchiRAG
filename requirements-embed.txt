@@ -1,0 +1,12 @@
+# =====================================================
+# ArchiRAG 真实 Embedding 依赖（重，可选）
+# -----------------------------------------------------
+# 默认情况下项目使用内置降级 Embedder（零依赖，可跑通全链路，
+# 但无语义真实效果）。需要真实语义检索时安装本文件：
+#     pip install -r requirements-embed.txt
+# 模型：BAAI/bge-large-zh-v1.5（约 1.3GB，首次运行自动下载）
+# =====================================================
+
+sentence-transformers>=2.7.0
+# torch 会作为 sentence-transformers 的依赖自动安装
+# CPU 版可指定：pip install torch --index-url https://download.pytorch.org/whl/cpu
