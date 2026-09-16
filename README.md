@@ -37,21 +37,65 @@ BAAI/bge-large-zh-v1.5 · Streamlit · Docker
 
 ## 快速开始
 
+### 1. 环境准备
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-copy .env.example .env       # 填入 QWEN_API_KEY 后为真实模式；留空即降级模式
-pytest                        # 全量测试（76 个）
+pip install -r requirements-embed.txt   # 真实语义检索（bge，含 torch）；不装则降级为哈希向量
+
+copy .env.example .env                   # 填入 QWEN_API_KEY 后为真实 LLM；留空即降级模式
+pytest                                   # 全量测试（76 个）
 ```
 
-启动服务：
+### 2. 准备 Embedding 模型（真实语义模式）
+
+bge-large-zh-v1.5 权重约 1.3GB，二选一：
+
+- **自动下载**：`.env` 中保持 `EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5`，首次启动自动从 HuggingFace 拉取
+- **离线/本地放置**：从 ModelScope 下载后放到 `data/modelscope/bge-large-zh-v1.5/`，
+  并将 `.env` 改为 `EMBEDDING_MODEL=./data/modelscope/bge-large-zh-v1.5`
+  （相对路径同时兼容本地与 Docker 容器内 `/app/...` 的解析）
+
+### 3. 准备规范数据
+
+FAISS 索引与种子数据**不随仓库分发**（见 `.gitignore`），需自备：
+
+- 原始规范文件（PDF/Word/TXT）放入 `data/raw/`，命名建议 `专业_规范名_规范号.txt`；或
+- 结构化条文放入 `data/seed/shu_ju.jsonl`（JSONL，每行一条，字段见 `scripts/import_jsonl.py`）
+
+两者皆空时服务仍可启动，但检索无结果。
+
+### 4. 一键启动（推荐）
 
 ```powershell
-# 入库演示规范（可选）
-python scripts/ingest.py data/raw
+python run_backend.py
+```
 
-# 后端 + 前端
+启动脚本会依次：① 检测到 FAISS 索引缺失时自动入库（优先 `data/raw/`，其次 `data/seed/shu_ju.jsonl`）
+→ ② 启动 watcher 文件监控 → ③ 启动 uvicorn 后端 → ④ 启动 Streamlit 前端；
+`Ctrl+C` 统一优雅停止全部子进程。
+
+常用参数：
+
+```powershell
+python run_backend.py --skip-ingest       # 跳过首次入库检查
+python run_backend.py --skip-watcher      # 不启动文件监控
+python run_backend.py --skip-frontend      # 仅起后端
+python run_backend.py --backend-port 8001 --frontend-port 8502
+```
+
+启动后访问：后端健康检查 http://localhost:8000/api/health ，前端 UI http://localhost:8501
+
+### 5. 手动启动（分步）
+
+```powershell
+# 入库（data/raw 原始文件 或 data/seed JSONL）
+python -m scripts.ingest data/raw
+python -m scripts.import_jsonl data/seed/shu_ju.jsonl
+
+# 后端 + 前端（分两个终端）
 uvicorn app.main:app --port 8000
 streamlit run frontend/streamlit_app.py
 ```
@@ -109,20 +153,19 @@ ArchiRAG/
 ├── frontend/
 │   └── streamlit_app.py          # DeepSeek 风格：会话栏+消息气泡+打字机+引用卡片+统计看板
 ├── data/
-│   ├── raw/                      # 原始规范文件（命名：专业_规范名_规范号.txt）
-│   ├── processed/                # 结构化 JSON（预留）
-│   ├── faiss_index/              # FAISS 持久化（index.faiss + index.pkl）
+│   ├── raw/                      # 原始规范文件（命名：专业_规范名_规范号.txt；内容未入库）
+│   ├── processed/                # 结构化 JSON（预留；内容未入库）
+│   ├── faiss_index/              # FAISS 持久化（index.faiss + index.pkl；运行产物，未入库）
 │   ├── seed/
-│   │   └── shu_ju.jsonl          # 数据源（400 条四专业规范条文）
+│   │   └── shu_ju.jsonl          # 结构化条文数据源（本地自备，未入库）
 │   ├── examples/
-│   │   └── 消防_演示规范_DEMO-001-2026.txt  # 演示规范
+│   │   └── 消防_演示规范_DEMO-001-2026.txt  # 演示规范（随仓库分发）
 │   ├── modelscope/
-│   │   └── bge-large-zh-v1.5/    # bge 模型权重（1.24GB，从 ModelScope 下载）
+│   │   └── bge-large-zh-v1.5/    # bge 模型权重（约 1.3GB，自行下载，未入库）
 │   └── test_questions.txt        # 60 条前端测试集
 ├── docker/
 │   ├── Dockerfile                # python:3.11-slim + faiss/pdf 系统依赖 + 可选 bge
-│   ├── docker-compose.yml        # 五服务：backend/watcher/frontend/db/mysql/redis + nginx(prod)
-│   ├── .dockerignore
+│   ├── docker-compose.yml        # 五服务：backend/watcher/frontend/mysql/redis + nginx(prod)
 │   ├── DEPLOY.md                 # 生产部署指南（SSL/域名/安全加固）
 │   └── nginx/
 │       ├── Dockerfile            # nginx:alpine
@@ -141,10 +184,12 @@ ArchiRAG/
 │   ├── __init__.py
 │   ├── ingest.py                 # 规范入库 CLI（txt 整本→splitter→FAISS+DB）
 │   ├── import_jsonl.py           # JSONL 结构化导入（坏行容错+幂等双写）
+│   ├── batch_test.py             # 批量问答测试（读取测试集→统计耗时/命中率→JSON 报告）
 │   ├── evaluate.py               # 评估脚本（recall@k + 关键词命中 + 准确率）
 │   └── smoke_e2e.py              # 端到端冒烟测试
-├── .env                          # 环境变量（API Key/DB/Redis 路径）
-├── .env.example                  # 环境变量模板
+├── run_backend.py                # 一键启动（首次入库 + watcher + 后端 + 前端）
+├── .env                          # 本地环境变量（含密钥，未入库；从 .env.example 复制）
+├── .env.example                  # 环境变量模板（占位符，随仓库分发）
 ├── .env.prod.example             # 生产环境变量模板
 ├── .gitignore
 ├── .dockerignore
